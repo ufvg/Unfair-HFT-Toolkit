@@ -7,8 +7,8 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from validation import _validate_nonnegative as _validate_nonnegative_scalar
-from validation import _validate_positive as _validate_positive_scalar
+from .validation import _validate_nonnegative as _validate_nonnegative_scalar
+from .validation import _validate_positive as _validate_positive_scalar
 
 FloatArray = NDArray[np.float64]
 

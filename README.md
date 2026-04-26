@@ -4,11 +4,13 @@ Minimal tooling for studying and monitoring **microprice** in live crypto order 
 
 This repo focuses on three pieces:
 
-- `apps/microprice_gui.py`
+- `microprice/gui/microprice_gui.py`
   Live GUI for streaming bid/ask, midprice, microprice, adjustment, strategy state, and equity.
-- `fetch_hyperliquid_l2.py`
+- `data_fetcher/fetch_hyperliquid_l2.py`
   Historical Hyperliquid L2 fetcher using AWS-backed archive access.
-- `L1microprice.py`, `calibration.py`, `multilevel_microprice.py`, `multilevel_calibration.py`
+- `data_fetcher/gui_fetch_hyperliquid_l2.py`
+  Simple GUI for downloading and decompressing historical Hyperliquid data.
+- `microprice/`
   Core microprice models, calibration utilities, and live streaming logic.
 
 The toolkit is built for lightweight experimentation:

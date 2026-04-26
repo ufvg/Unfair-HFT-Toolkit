@@ -8,8 +8,8 @@ from typing import Any, Callable
 
 import numpy as np
 
-from calibration import FittedMicropriceModel, load_model
-from multilevel_calibration import FittedMultilevelMicropriceModel, load_multilevel_model
+from .calibration import FittedMicropriceModel, load_model
+from .multilevel_calibration import FittedMultilevelMicropriceModel, load_multilevel_model
 
 HYPERLIQUID_MAINNET_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_TESTNET_WS_URL = "wss://api.hyperliquid-testnet.xyz/ws"
@@ -402,14 +402,13 @@ def build_live_payload_from_message(
     return payload
 
 
-def _stream_l1_microprice(
+def _stream_messages(
     coin: str,
-    model: FittedMicropriceModel,
     on_update: Callable[[dict[str, Any]], None],
     url: str,
     subscription_type: str,
-    estimator: str | int,
     websocket_factory: Callable[[str], Any],
+    build_payload: Callable[[dict[str, Any]], dict[str, Any] | None],
     max_messages: int | None,
 ) -> None:
     connection = websocket_factory(url)
@@ -424,7 +423,7 @@ def _stream_l1_microprice(
                 parsed = json.loads(raw_message)
             except (TypeError, json.JSONDecodeError):
                 continue
-            payload = build_live_payload_from_message(parsed, model, estimator=estimator)
+            payload = build_payload(parsed)
             if payload is None:
                 continue
             on_update(payload)
@@ -433,6 +432,27 @@ def _stream_l1_microprice(
                 break
     finally:
         connection.close()
+
+
+def _stream_l1_microprice(
+    coin: str,
+    model: FittedMicropriceModel,
+    on_update: Callable[[dict[str, Any]], None],
+    url: str,
+    subscription_type: str,
+    estimator: str | int,
+    websocket_factory: Callable[[str], Any],
+    max_messages: int | None,
+) -> None:
+    _stream_messages(
+        coin=coin,
+        on_update=on_update,
+        url=url,
+        subscription_type=subscription_type,
+        websocket_factory=websocket_factory,
+        build_payload=lambda parsed: build_live_payload_from_message(parsed, model, estimator=estimator),
+        max_messages=max_messages,
+    )
 
 
 def _stream_multilevel_microprice(
@@ -446,27 +466,15 @@ def _stream_multilevel_microprice(
 ) -> None:
     if subscription_type != "l2Book":
         raise ValueError("Multilevel streaming requires subscription_type='l2Book'.")
-    connection = websocket_factory(url)
-    processed = 0
-    try:
-        connection.send(json.dumps(build_subscription_message(coin, subscription_type)))
-        while True:
-            raw_message = connection.recv()
-            if raw_message is None:
-                break
-            try:
-                parsed = json.loads(raw_message)
-            except (TypeError, json.JSONDecodeError):
-                continue
-            payload = build_live_payload_from_message(parsed, model, estimator="multilevel")
-            if payload is None:
-                continue
-            on_update(payload)
-            processed += 1
-            if max_messages is not None and processed >= max_messages:
-                break
-    finally:
-        connection.close()
+    _stream_messages(
+        coin=coin,
+        on_update=on_update,
+        url=url,
+        subscription_type=subscription_type,
+        websocket_factory=websocket_factory,
+        build_payload=lambda parsed: build_live_payload_from_message(parsed, model, estimator="multilevel"),
+        max_messages=max_messages,
+    )
 
 
 def stream_hyperliquid_microprice(
@@ -540,14 +548,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 
 def launch_gui() -> None:
-    from apps.microprice_gui import launch_gui as gui_launch
+    from microprice.gui.microprice_gui import launch_gui as gui_launch
 
     gui_launch()
 
 
 def __getattr__(name: str) -> Any:
     if name == "MicropriceGui":
-        from apps.microprice_gui import MicropriceGui
+        from microprice.gui.microprice_gui import MicropriceGui
 
         return MicropriceGui
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

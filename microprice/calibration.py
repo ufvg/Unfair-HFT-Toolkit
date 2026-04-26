@@ -14,8 +14,8 @@ import lz4.frame
 import numpy as np
 import pandas as pd
 
-from validation import _validate_finite as _validate_finite_scalar
-from validation import _validate_nonnegative as _validate_nonnegative_scalar
+from .validation import _validate_finite as _validate_finite_scalar
+from .validation import _validate_nonnegative as _validate_nonnegative_scalar
 
 REQUIRED_COLUMNS = ("time", "bid", "ask", "bs", "as")
 L2_TENSOR_WIDTH = 81

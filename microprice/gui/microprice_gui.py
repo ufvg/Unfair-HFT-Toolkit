@@ -9,7 +9,7 @@ from typing import Any
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -18,7 +18,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import ScalarFormatter
 
-from L1microprice import (
+from microprice.L1microprice import (
     ESTIMATOR_CHOICES,
     GUI_POLL_MS,
     HYPERLIQUID_MAINNET_WS_URL,
@@ -26,8 +26,8 @@ from L1microprice import (
     load_streaming_model,
     stream_hyperliquid_microprice,
 )
-from calibration import FittedMicropriceModel
-from multilevel_calibration import FittedMultilevelMicropriceModel
+from microprice.calibration import FittedMicropriceModel
+from microprice.multilevel_calibration import FittedMultilevelMicropriceModel
 
 try:
     from local_strategies.adjustment_threshold_strategy import AdjustmentThresholdStrategy, StrategySnapshot
@@ -101,6 +101,25 @@ class MicropriceGui:
         self._build_ui()
         self._reload_model_metadata()
         self.root.after(GUI_POLL_MS, self._poll_queue)
+
+    def _reset_live_text(self) -> None:
+        self.last_feed_var.set("Feed: -")
+        self.last_bidask_var.set("Bid / Ask: -")
+        self.last_spread_var.set("Spread: -")
+        self.last_mid_var.set("Mid: -")
+        self.last_primary_micro_var.set("Primary Micro: -")
+        self.last_primary_adjustment_var.set("Primary Adj: -")
+        self.last_adjustment_ticks_var.set("Signal Ticks: -")
+        self.last_imbalance_var.set("Imbalance: -")
+        self.last_state_var.set("Model State: -")
+
+    def _resize_series(self, max_points: int) -> None:
+        self.mid_series = deque(self.mid_series, maxlen=max_points)
+        self.primary_micro_series = deque(self.primary_micro_series, maxlen=max_points)
+        self.primary_adjustment_series = deque(self.primary_adjustment_series, maxlen=max_points)
+        self.adjustment_ticks_series = deque(self.adjustment_ticks_series, maxlen=max_points)
+        self.strategy_pnl_series = deque(self.strategy_pnl_series, maxlen=max_points)
+        self.x_series = deque(self.x_series, maxlen=max_points)
 
     def _build_ui(self) -> None:
         container = ttk.Frame(self.root, padding=10)
@@ -274,16 +293,6 @@ class MicropriceGui:
             f"| dt={model.dt} | tick={model.tick_size:.6g} | estimators={estimators}"
         )
 
-    def _series_ref(self, primary_name: str, legacy_name: str):
-        if hasattr(self, primary_name):
-            return getattr(self, primary_name)
-        return getattr(self, legacy_name)
-
-    def _line_ref(self, primary_name: str, legacy_name: str):
-        if hasattr(self, primary_name):
-            return getattr(self, primary_name)
-        return getattr(self, legacy_name)
-
     def _set_text_var(self, value: str, *names: str) -> None:
         for name in names:
             variable = getattr(self, name, None)
@@ -292,12 +301,8 @@ class MicropriceGui:
 
     def _set_line_labels(self, model: StreamingModel | None) -> None:
         primary_label = "Microprice" if model is None else _model_family(model)
-        primary_micro_line = self._line_ref("primary_micro_line", "micro_line")
-        primary_adjustment_line = self._line_ref("primary_adjustment_line", "adjustment_line")
-        if hasattr(primary_micro_line, "set_label"):
-            primary_micro_line.set_label(f"{primary_label} Microprice")
-        if hasattr(primary_adjustment_line, "set_label"):
-            primary_adjustment_line.set_label(f"{primary_label} Adjustment")
+        self.primary_micro_line.set_label(f"{primary_label} Microprice")
+        self.primary_adjustment_line.set_label(f"{primary_label} Adjustment")
         if hasattr(self.adjustment_ticks_line, "set_label"):
             self.adjustment_ticks_line.set_label(f"{primary_label} Signal (ticks)")
         self._refresh_legend()
@@ -340,8 +345,8 @@ class MicropriceGui:
         self._apply_model_controls(model)
 
     def _refresh_legend(self) -> None:
-        price_handles = [self.mid_line, self._line_ref("primary_micro_line", "micro_line")]
-        adjustment_handles = [self._line_ref("primary_adjustment_line", "adjustment_line")]
+        price_handles = [self.mid_line, self.primary_micro_line]
+        adjustment_handles = [self.primary_adjustment_line]
         if self.show_adjustment_ticks_line:
             adjustment_handles.append(self.adjustment_ticks_line)
 
@@ -389,15 +394,7 @@ class MicropriceGui:
         self.point_counter = 0
         if self.strategy_engine is not None:
             self.strategy_engine.reset()
-        self.last_feed_var.set("Feed: -")
-        self.last_bidask_var.set("Bid / Ask: -")
-        self.last_spread_var.set("Spread: -")
-        self.last_mid_var.set("Mid: -")
-        self.last_primary_micro_var.set("Primary Micro: -")
-        self.last_primary_adjustment_var.set("Primary Adj: -")
-        self.last_adjustment_ticks_var.set("Signal Ticks: -")
-        self.last_imbalance_var.set("Imbalance: -")
-        self.last_state_var.set("Model State: -")
+        self._reset_live_text()
         self._update_strategy_labels(None)
         self._refresh_plot()
 
@@ -412,18 +409,7 @@ class MicropriceGui:
         model = load_streaming_model(model_path)
 
         max_points = self._get_max_points()
-        self.mid_series = deque(self.mid_series, maxlen=max_points)
-        if hasattr(self, "primary_micro_series"):
-            self.primary_micro_series = deque(self.primary_micro_series, maxlen=max_points)
-        else:
-            self.micro_series = deque(self.micro_series, maxlen=max_points)
-        if hasattr(self, "primary_adjustment_series"):
-            self.primary_adjustment_series = deque(self.primary_adjustment_series, maxlen=max_points)
-        else:
-            self.adjustment_series = deque(self.adjustment_series, maxlen=max_points)
-        self.adjustment_ticks_series = deque(self.adjustment_ticks_series, maxlen=max_points)
-        self.strategy_pnl_series = deque(self.strategy_pnl_series, maxlen=max_points)
-        self.x_series = deque(self.x_series, maxlen=max_points)
+        self._resize_series(max_points)
 
         subscription_type = self.subscription_var.get().strip() or "l2Book"
         if isinstance(model, FittedMultilevelMicropriceModel):
@@ -573,8 +559,8 @@ class MicropriceGui:
         self.point_counter += 1
         self.x_series.append(self.point_counter)
         self.mid_series.append(float(data["midprice"]))
-        self._series_ref("primary_micro_series", "micro_series").append(float(data["microprice"]))
-        self._series_ref("primary_adjustment_series", "adjustment_series").append(float(data["adjustment"]))
+        self.primary_micro_series.append(float(data["microprice"]))
+        self.primary_adjustment_series.append(float(data["adjustment"]))
         adjustment_ticks = data.get("adjustment_ticks")
         self.adjustment_ticks_series.append(float("nan") if adjustment_ticks is None else float(adjustment_ticks))
         strategy_snapshot = self._update_strategy_state(
@@ -663,11 +649,14 @@ class MicropriceGui:
         self.strategy_status_var.set(f"Strategy: {snapshot.last_action}")
         self.strategy_position_var.set(
             f"Position: {position_name} | hold_left={snapshot.events_remaining} | entry={_fmt_float(snapshot.entry_price)}"
+            f" | entry_adj={_fmt_float(snapshot.entry_adjustment)}"
         )
         self.strategy_pnl_var.set(
             f"PnL: realized={snapshot.realized_pnl:.6f} | unrealized={snapshot.unrealized_pnl:.6f} | total={snapshot.total_pnl:.6f}"
         )
-        self.strategy_trade_count_var.set(f"Closed Trades: {snapshot.trades_closed}")
+        self.strategy_trade_count_var.set(
+            f"Closed Trades: {snapshot.trades_closed} | last_exit_event={snapshot.exit_event_index or '-'}"
+        )
 
     def _poll_queue(self) -> None:
         try:

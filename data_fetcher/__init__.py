@@ -1,0 +1,2 @@
+"""Historical data fetcher package."""
+

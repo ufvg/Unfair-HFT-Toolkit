@@ -9,7 +9,7 @@ from typing import Any, Literal, Sequence
 import numpy as np
 import pandas as pd
 
-from calibration import (
+from .calibration import (
     L1Microprice,
     L2_TENSOR_WIDTH,
     TIMESTAMP_COLUMN,
@@ -21,7 +21,7 @@ from calibration import (
     summarize_signal_performance,
     summarize_alpha_signal,
 )
-from multilevel_microprice import MultilevelMicroprice, raw_multilevel_microprice, raw_multilevel_microprice_batch
+from .multilevel_microprice import MultilevelMicroprice, raw_multilevel_microprice, raw_multilevel_microprice_batch
 
 MAX_BOOK_LEVELS = 20
 LEVEL_STRIDE = 2

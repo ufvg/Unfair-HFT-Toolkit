@@ -9,11 +9,11 @@ from pathlib import Path
 import sys
 from tkinter import filedialog, messagebox, ttk
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from fetch_hyperliquid_l2 import (
+from data_fetcher.fetch_hyperliquid_l2 import (
     decompress_archive_object,
     decompressed_output_path,
     fetch_historical_l2,
@@ -62,6 +62,9 @@ class FetchGui:
 
         self._build_ui()
         self.root.after(100, self._poll_queue)
+
+    def _set_run_state(self, *, running: bool) -> None:
+        self.run_button.configure(state="disabled" if running else "normal")
 
     def _build_ui(self) -> None:
         frame = ttk.Frame(self.root, padding=12)
@@ -176,7 +179,7 @@ class FetchGui:
             messagebox.showerror("Invalid Input", str(exc))
             return
 
-        self.run_button.configure(state="disabled")
+        self._set_run_state(running=True)
         self.progress_var.set(0)
         self.status_var.set("Fetching...")
         self._append_log(
@@ -261,11 +264,11 @@ class FetchGui:
                     self._append_log(str(payload))
                     self.progress_var.set(100.0)
                     self.status_var.set("Completed")
-                    self.run_button.configure(state="normal")
+                    self._set_run_state(running=False)
                 elif event_type == "error":
                     self._append_log(f"Error: {payload}")
                     self.status_var.set("Failed")
-                    self.run_button.configure(state="normal")
+                    self._set_run_state(running=False)
                     messagebox.showerror("Fetch Failed", str(payload))
         except queue.Empty:
             pass
