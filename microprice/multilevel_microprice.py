@@ -10,6 +10,11 @@ from numpy.typing import ArrayLike, NDArray
 from .validation import _validate_nonnegative as _validate_nonnegative_scalar
 from .validation import _validate_positive as _validate_positive_scalar
 
+try:
+    from numba import njit
+except ImportError:  # pragma: no cover - optional runtime acceleration
+    njit = None
+
 FloatArray = NDArray[np.float64]
 
 
@@ -78,6 +83,45 @@ def _compute_distance_decayed_weights_core(
     np.exp(price_distance, out=price_distance)
     price_distance *= level_sizes
     return price_distance
+
+
+if njit is not None:
+
+    @njit(cache=True)
+    def _raw_multilevel_microprice_batch_numba(
+        bid_px: np.ndarray,
+        bid_sz: np.ndarray,
+        ask_px: np.ndarray,
+        ask_sz: np.ndarray,
+        tick_size: float,
+        decay_lambda: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        rows, levels = bid_px.shape
+        mid = np.empty(rows, dtype=np.float64)
+        raw_microprice = np.empty(rows, dtype=np.float64)
+        for row in range(rows):
+            best_bid = bid_px[row, 0]
+            best_ask = ask_px[row, 0]
+            row_mid = 0.5 * (best_bid + best_ask)
+            mid[row] = row_mid
+
+            numerator = 0.0
+            denominator = 0.0
+            for level in range(levels):
+                bid_weight = np.exp(-decay_lambda * ((row_mid - bid_px[row, level]) / tick_size)) * bid_sz[row, level]
+                ask_weight = np.exp(-decay_lambda * ((ask_px[row, level] - row_mid) / tick_size)) * ask_sz[row, level]
+                numerator += ask_px[row, level] * bid_weight + bid_px[row, level] * ask_weight
+                denominator += bid_weight + ask_weight
+
+            if denominator > 0.0:
+                raw_microprice[row] = numerator / denominator
+            else:
+                raw_microprice[row] = row_mid
+        return mid, raw_microprice
+
+
+else:
+    _raw_multilevel_microprice_batch_numba = None
 
 
 def compute_distance_decayed_weights(
@@ -194,27 +238,46 @@ def raw_multilevel_microprice_batch(
     tick = _validate_positive_scalar(tick_size, "tick_size")
     decay = _validate_nonnegative_scalar(decay_lambda, "decay_lambda")
 
-    mid = 0.5 * (bid_px[..., 0] + ask_px[..., 0])
-    bid_weights = _compute_distance_decayed_weights_core(
-        level_prices=bid_px,
-        level_sizes=bid_sz,
-        mid=mid,
-        tick_size=tick,
-        decay_lambda=decay,
-        side="bid",
-    )
-    ask_weights = _compute_distance_decayed_weights_core(
-        level_prices=ask_px,
-        level_sizes=ask_sz,
-        mid=mid,
-        tick_size=tick,
-        decay_lambda=decay,
-        side="ask",
-    )
-    numerator = np.sum(ask_px * bid_weights, axis=-1) + np.sum(bid_px * ask_weights, axis=-1)
-    denominator = np.sum(bid_weights, axis=-1) + np.sum(ask_weights, axis=-1)
-    raw_microprice = np.array(mid, copy=True)
-    np.divide(numerator, denominator, out=raw_microprice, where=denominator > 0.0)
+    original_shape = bid_px.shape[:-1]
+    flat_bid_px = np.ascontiguousarray(bid_px.reshape(-1, bid_px.shape[-1]))
+    flat_bid_sz = np.ascontiguousarray(bid_sz.reshape(-1, bid_sz.shape[-1]))
+    flat_ask_px = np.ascontiguousarray(ask_px.reshape(-1, ask_px.shape[-1]))
+    flat_ask_sz = np.ascontiguousarray(ask_sz.reshape(-1, ask_sz.shape[-1]))
+
+    if _raw_multilevel_microprice_batch_numba is not None:
+        flat_mid, flat_raw_microprice = _raw_multilevel_microprice_batch_numba(
+            flat_bid_px,
+            flat_bid_sz,
+            flat_ask_px,
+            flat_ask_sz,
+            tick,
+            decay,
+        )
+    else:
+        flat_mid = 0.5 * (flat_bid_px[:, 0] + flat_ask_px[:, 0])
+        bid_weights = _compute_distance_decayed_weights_core(
+            level_prices=flat_bid_px,
+            level_sizes=flat_bid_sz,
+            mid=flat_mid,
+            tick_size=tick,
+            decay_lambda=decay,
+            side="bid",
+        )
+        ask_weights = _compute_distance_decayed_weights_core(
+            level_prices=flat_ask_px,
+            level_sizes=flat_ask_sz,
+            mid=flat_mid,
+            tick_size=tick,
+            decay_lambda=decay,
+            side="ask",
+        )
+        numerator = np.sum(flat_ask_px * bid_weights, axis=-1) + np.sum(flat_bid_px * ask_weights, axis=-1)
+        denominator = np.sum(bid_weights, axis=-1) + np.sum(ask_weights, axis=-1)
+        flat_raw_microprice = np.array(flat_mid, copy=True)
+        np.divide(numerator, denominator, out=flat_raw_microprice, where=denominator > 0.0)
+
+    mid = flat_mid.reshape(original_shape)
+    raw_microprice = flat_raw_microprice.reshape(original_shape)
     return np.asarray(mid, dtype=np.float64), np.asarray(raw_microprice, dtype=np.float64)
 
 

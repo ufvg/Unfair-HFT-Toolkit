@@ -17,6 +17,11 @@ import pandas as pd
 from .validation import _validate_finite as _validate_finite_scalar
 from .validation import _validate_nonnegative as _validate_nonnegative_scalar
 
+try:
+    from numba import njit
+except ImportError:  # pragma: no cover - optional runtime acceleration
+    njit = None
+
 REQUIRED_COLUMNS = ("time", "bid", "ask", "bs", "as")
 L2_TENSOR_WIDTH = 81
 TIMESTAMP_COLUMN = 0
@@ -29,6 +34,44 @@ DEFAULT_THRESHOLD_PERCENTILES = (80, 90, 95)
 
 def _as_float_array(values: Any) -> np.ndarray:
     return np.asarray(values, dtype=float)
+
+
+if njit is not None:
+
+    @njit(cache=True)
+    def _accumulate_transition_counts_numba(
+        current_state_arr: np.ndarray,
+        next_state_arr: np.ndarray,
+        rounded_dM: np.ndarray,
+        move_values: np.ndarray,
+        tolerance: float,
+        state_count: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        q_counts = np.zeros((state_count, state_count), dtype=np.float64)
+        r1_counts = np.zeros((state_count, move_values.shape[0]), dtype=np.float64)
+        r2_counts = np.zeros((state_count, state_count), dtype=np.float64)
+
+        for i in range(current_state_arr.shape[0]):
+            cur = current_state_arr[i]
+            nxt = next_state_arr[i]
+            move = rounded_dM[i]
+            if abs(move) < tolerance:
+                q_counts[cur, nxt] += 1.0
+                continue
+
+            move_index = -1
+            for j in range(move_values.shape[0]):
+                if abs(move - move_values[j]) < tolerance:
+                    move_index = j
+                    break
+            if move_index >= 0:
+                r1_counts[cur, move_index] += 1.0
+                r2_counts[cur, nxt] += 1.0
+        return q_counts, r1_counts, r2_counts
+
+
+else:
+    _accumulate_transition_counts_numba = None
 
 
 def raw_l1_microprice(
@@ -1509,10 +1552,6 @@ def fit_microprice_model(
     move_values = np.array([-tick_size, -tick_size / 2.0, tick_size / 2.0, tick_size], dtype=float)
     move_lookup = {round(float(value), 12): idx for idx, value in enumerate(move_values)}
 
-    Q_counts = np.zeros((state_count, state_count), dtype=float)
-    R1_counts = np.zeros((state_count, len(move_values)), dtype=float)
-    R2_counts = np.zeros((state_count, state_count), dtype=float)
-
     spread_ticks_arr = prepared_df["spread_ticks"].to_numpy(dtype=np.intp)
     imb_bucket_arr = prepared_df["imb_bucket"].to_numpy(dtype=np.intp)
     next_spread_arr = prepared_df["next_spread_ticks"].to_numpy(dtype=np.intp)
@@ -1522,22 +1561,35 @@ def fit_microprice_model(
     current_state_arr = (spread_ticks_arr - 1) * n_imb + imb_bucket_arr
     next_state_arr = (next_spread_arr - 1) * n_imb + next_imb_arr
     rounded_dM = np.round(dM_arr, 12)
+    if _accumulate_transition_counts_numba is not None:
+        Q_counts, R1_counts, R2_counts = _accumulate_transition_counts_numba(
+            current_state_arr=current_state_arr,
+            next_state_arr=next_state_arr,
+            rounded_dM=rounded_dM,
+            move_values=move_values,
+            tolerance=1e-12,
+            state_count=state_count,
+        )
+    else:
+        Q_counts = np.zeros((state_count, state_count), dtype=float)
+        R1_counts = np.zeros((state_count, len(move_values)), dtype=float)
+        R2_counts = np.zeros((state_count, state_count), dtype=float)
 
-    is_zero = np.abs(rounded_dM) < 1e-12
-    np.add.at(Q_counts, (current_state_arr[is_zero], next_state_arr[is_zero]), 1.0)
+        is_zero = np.abs(rounded_dM) < 1e-12
+        np.add.at(Q_counts, (current_state_arr[is_zero], next_state_arr[is_zero]), 1.0)
 
-    nonzero_mask = ~is_zero
-    nz_dM = rounded_dM[nonzero_mask]
-    nz_cur = current_state_arr[nonzero_mask]
-    nz_nxt = next_state_arr[nonzero_mask]
+        nonzero_mask = ~is_zero
+        nz_dM = rounded_dM[nonzero_mask]
+        nz_cur = current_state_arr[nonzero_mask]
+        nz_nxt = next_state_arr[nonzero_mask]
 
-    move_indices = np.full(len(nz_dM), -1, dtype=np.intp)
-    for mv_val, mv_idx in move_lookup.items():
-        move_indices[np.abs(nz_dM - mv_val) < 1e-12] = mv_idx
+        move_indices = np.full(len(nz_dM), -1, dtype=np.intp)
+        for mv_val, mv_idx in move_lookup.items():
+            move_indices[np.abs(nz_dM - mv_val) < 1e-12] = mv_idx
 
-    valid_moves = move_indices >= 0
-    np.add.at(R1_counts, (nz_cur[valid_moves], move_indices[valid_moves]), 1.0)
-    np.add.at(R2_counts, (nz_cur[valid_moves], nz_nxt[valid_moves]), 1.0)
+        valid_moves = move_indices >= 0
+        np.add.at(R1_counts, (nz_cur[valid_moves], move_indices[valid_moves]), 1.0)
+        np.add.at(R2_counts, (nz_cur[valid_moves], nz_nxt[valid_moves]), 1.0)
 
     def normalize_rows(matrix: np.ndarray) -> np.ndarray:
         row_sums = matrix.sum(axis=1, keepdims=True)
