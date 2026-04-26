@@ -29,6 +29,12 @@ from L1microprice import (
 from calibration import FittedMicropriceModel
 from multilevel_calibration import FittedMultilevelMicropriceModel
 
+try:
+    from local_strategies.adjustment_threshold_strategy import AdjustmentThresholdStrategy, StrategySnapshot
+except ImportError:
+    AdjustmentThresholdStrategy = None
+    StrategySnapshot = Any
+
 StreamingModel = FittedMicropriceModel | FittedMultilevelMicropriceModel
 
 DEFAULT_PRIMARY_MODEL = ROOT / "models" / "btc_l1_model_20260122_20260221.json"
@@ -57,6 +63,7 @@ class MicropriceGui:
         self.estimator_var = tk.StringVar(value="G1")
         self.url_var = tk.StringVar(value=HYPERLIQUID_MAINNET_WS_URL)
         self.max_points_var = tk.StringVar(value="300")
+        self.run_strategy_var = tk.BooleanVar(value=False)
 
         self.status_var = tk.StringVar(value="Ready")
         self.primary_model_info_var = tk.StringVar(value="Primary model: not loaded")
@@ -70,6 +77,10 @@ class MicropriceGui:
         self.last_adjustment_ticks_var = tk.StringVar(value="Signal Ticks: -")
         self.last_imbalance_var = tk.StringVar(value="Imbalance: -")
         self.last_state_var = tk.StringVar(value="Model State: -")
+        self.strategy_status_var = tk.StringVar(value="Strategy: unavailable")
+        self.strategy_position_var = tk.StringVar(value="Position: -")
+        self.strategy_pnl_var = tk.StringVar(value="PnL: -")
+        self.strategy_trade_count_var = tk.StringVar(value="Closed Trades: -")
 
         self.data_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.worker: threading.Thread | None = None
@@ -77,11 +88,13 @@ class MicropriceGui:
         self.stop_event = threading.Event()
         self.primary_model_cache: StreamingModel | None = None
         self.show_adjustment_ticks_line = True
+        self.strategy_engine = AdjustmentThresholdStrategy() if AdjustmentThresholdStrategy is not None else None
 
         self.mid_series: deque[float] = deque(maxlen=300)
         self.primary_micro_series: deque[float] = deque(maxlen=300)
         self.primary_adjustment_series: deque[float] = deque(maxlen=300)
         self.adjustment_ticks_series: deque[float] = deque(maxlen=300)
+        self.strategy_pnl_series: deque[float] = deque(maxlen=300)
         self.x_series: deque[int] = deque(maxlen=300)
         self.point_counter = 0
 
@@ -151,8 +164,11 @@ class MicropriceGui:
         ttk.Spinbox(session_frame, from_=50, to=5000, textvariable=self.max_points_var, width=10).grid(
             row=3, column=1, sticky="w", pady=4
         )
-        ttk.Label(session_frame, text="Websocket URL").grid(row=4, column=0, sticky="w", pady=4)
-        ttk.Entry(session_frame, textvariable=self.url_var).grid(row=4, column=1, sticky="ew", pady=4)
+        ttk.Checkbutton(session_frame, text="Run Strategy", variable=self.run_strategy_var).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=4
+        )
+        ttk.Label(session_frame, text="Websocket URL").grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Entry(session_frame, textvariable=self.url_var).grid(row=5, column=1, sticky="ew", pady=4)
 
         controls = ttk.Frame(sidebar)
         controls.grid(row=2, column=0, sticky="ew", pady=(0, 8))
@@ -177,6 +193,10 @@ class MicropriceGui:
             self.last_adjustment_ticks_var,
             self.last_imbalance_var,
             self.last_state_var,
+            self.strategy_status_var,
+            self.strategy_position_var,
+            self.strategy_pnl_var,
+            self.strategy_trade_count_var,
         ]
         for row, variable in enumerate(labels):
             ttk.Label(info_frame, textvariable=variable, wraplength=320, justify="left").grid(
@@ -192,10 +212,11 @@ class MicropriceGui:
             font=("Segoe UI", 11, "bold"),
         ).grid(row=0, column=0, sticky="w")
 
-        figure = Figure(figsize=(12.5, 8.0), dpi=100, constrained_layout=True)
-        grid = figure.add_gridspec(2, 1, height_ratios=(3.0, 1.4))
+        figure = Figure(figsize=(12.5, 8.4), dpi=100, constrained_layout=True)
+        grid = figure.add_gridspec(3, 1, height_ratios=(3.0, 1.4, 1.2))
         self.axis = figure.add_subplot(grid[0])
         self.adjustment_axis = figure.add_subplot(grid[1], sharex=self.axis)
+        self.strategy_axis = figure.add_subplot(grid[2], sharex=self.axis)
         self.axis.set_title("Microprice vs Midprice")
         self.axis.set_ylabel("Price")
         self.axis.grid(True, alpha=0.25)
@@ -203,9 +224,12 @@ class MicropriceGui:
         price_formatter.set_scientific(False)
         self.axis.yaxis.set_major_formatter(price_formatter)
         self.adjustment_axis.set_title("Microprice Adjustment")
-        self.adjustment_axis.set_xlabel("Observation")
         self.adjustment_axis.set_ylabel("Adjustment")
         self.adjustment_axis.grid(True, alpha=0.25)
+        self.strategy_axis.set_title("Strategy Equity")
+        self.strategy_axis.set_xlabel("Observation")
+        self.strategy_axis.set_ylabel("PnL")
+        self.strategy_axis.grid(True, alpha=0.25)
 
         (self.mid_line,) = self.axis.plot([], [], color="#1f77b4", label="Mid", linewidth=1.8)
         (self.primary_micro_line,) = self.axis.plot([], [], color="#d62728", label="Microprice", linewidth=1.9)
@@ -214,6 +238,9 @@ class MicropriceGui:
         )
         (self.adjustment_ticks_line,) = self.adjustment_axis.plot(
             [], [], color="#9467bd", label="Signal (ticks)", linewidth=1.5, linestyle="--"
+        )
+        (self.strategy_pnl_line,) = self.strategy_axis.plot(
+            [], [], color="#ff7f0e", label="Total PnL", linewidth=1.6
         )
         self._refresh_legend()
 
@@ -328,6 +355,11 @@ class MicropriceGui:
             adjustment_legend.remove()
         self.adjustment_axis.legend(handles=adjustment_handles, loc="upper left")
 
+        strategy_legend = self.strategy_axis.get_legend()
+        if strategy_legend is not None:
+            strategy_legend.remove()
+        self.strategy_axis.legend(handles=[self.strategy_pnl_line], loc="upper left")
+
     def _set_adjustment_ticks_visibility(self, tick_size: float) -> None:
         self.show_adjustment_ticks_line = not np.isclose(float(tick_size), 1.0)
         self.adjustment_ticks_line.set_visible(self.show_adjustment_ticks_line)
@@ -352,8 +384,11 @@ class MicropriceGui:
         self.primary_micro_series = deque(maxlen=max_points)
         self.primary_adjustment_series = deque(maxlen=max_points)
         self.adjustment_ticks_series = deque(maxlen=max_points)
+        self.strategy_pnl_series = deque(maxlen=max_points)
         self.x_series = deque(maxlen=max_points)
         self.point_counter = 0
+        if self.strategy_engine is not None:
+            self.strategy_engine.reset()
         self.last_feed_var.set("Feed: -")
         self.last_bidask_var.set("Bid / Ask: -")
         self.last_spread_var.set("Spread: -")
@@ -363,6 +398,7 @@ class MicropriceGui:
         self.last_adjustment_ticks_var.set("Signal Ticks: -")
         self.last_imbalance_var.set("Imbalance: -")
         self.last_state_var.set("Model State: -")
+        self._update_strategy_labels(None)
         self._refresh_plot()
 
     def _validate_inputs(self) -> tuple[StreamingModel, dict[str, Any]]:
@@ -386,6 +422,7 @@ class MicropriceGui:
         else:
             self.adjustment_series = deque(self.adjustment_series, maxlen=max_points)
         self.adjustment_ticks_series = deque(self.adjustment_ticks_series, maxlen=max_points)
+        self.strategy_pnl_series = deque(self.strategy_pnl_series, maxlen=max_points)
         self.x_series = deque(self.x_series, maxlen=max_points)
 
         subscription_type = self.subscription_var.get().strip() or "l2Book"
@@ -409,6 +446,7 @@ class MicropriceGui:
             "url": self.url_var.get().strip() or HYPERLIQUID_MAINNET_WS_URL,
             "subscription_type": subscription_type,
             "estimator": estimator,
+            "run_strategy": bool(self.run_strategy_var.get()),
         }
 
     def _start_stream(self) -> None:
@@ -474,6 +512,7 @@ class MicropriceGui:
             self.primary_micro_line.set_data([], [])
             self.primary_adjustment_line.set_data([], [])
             self.adjustment_ticks_line.set_data([], [])
+            self.strategy_pnl_line.set_data([], [])
             self.canvas.draw_idle()
             return
 
@@ -482,6 +521,7 @@ class MicropriceGui:
         primary_micro_values = list(self.primary_micro_series)
         primary_adjustment_values = list(self.primary_adjustment_series)
         adjustment_ticks_values = list(self.adjustment_ticks_series)
+        strategy_pnl_values = list(self.strategy_pnl_series)
 
         self.mid_line.set_data(x_values, mid_values)
         self.primary_micro_line.set_data(x_values, primary_micro_values)
@@ -490,10 +530,12 @@ class MicropriceGui:
             self.adjustment_ticks_line.set_data(x_values, adjustment_ticks_values)
         else:
             self.adjustment_ticks_line.set_data([], [])
+        self.strategy_pnl_line.set_data(x_values, strategy_pnl_values)
 
         x_max = x_values[-1] if x_values[-1] > x_values[0] else x_values[0] + 1
         self.axis.set_xlim(x_values[0], x_max)
         self.adjustment_axis.set_xlim(x_values[0], x_max)
+        self.strategy_axis.set_xlim(x_values[0], x_max)
 
         price_arrays = [np.asarray(mid_values, dtype=float), np.asarray(primary_micro_values, dtype=float)]
         finite_prices = np.concatenate([array[np.isfinite(array)] for array in price_arrays if array.size > 0])
@@ -515,6 +557,16 @@ class MicropriceGui:
             adj_pad = max(abs(adj_min) * 0.05, 1e-6) if adj_max <= adj_min else (adj_max - adj_min) * 0.1
             self.adjustment_axis.set_ylim(adj_min - adj_pad, adj_max + adj_pad)
 
+        finite_pnl = np.asarray(strategy_pnl_values, dtype=float)
+        finite_pnl = finite_pnl[np.isfinite(finite_pnl)]
+        if finite_pnl.size == 0:
+            self.strategy_axis.set_ylim(-1.0, 1.0)
+        else:
+            pnl_min = float(finite_pnl.min())
+            pnl_max = float(finite_pnl.max())
+            pnl_pad = max(abs(pnl_min) * 0.05, 1e-6) if pnl_max <= pnl_min else (pnl_max - pnl_min) * 0.1
+            self.strategy_axis.set_ylim(pnl_min - pnl_pad, pnl_max + pnl_pad)
+
         self.canvas.draw_idle()
 
     def _apply_update(self, data: dict[str, Any]) -> None:
@@ -525,6 +577,13 @@ class MicropriceGui:
         self._series_ref("primary_adjustment_series", "adjustment_series").append(float(data["adjustment"]))
         adjustment_ticks = data.get("adjustment_ticks")
         self.adjustment_ticks_series.append(float("nan") if adjustment_ticks is None else float(adjustment_ticks))
+        strategy_snapshot = self._update_strategy_state(
+            midprice=float(data["midprice"]),
+            adjustment=float(data["adjustment"]),
+        )
+        self.strategy_pnl_series.append(
+            float("nan") if strategy_snapshot is None else float(strategy_snapshot.total_pnl)
+        )
 
         primary_label = "Multilevel" if data.get("model_kind") == "multilevel" else "L1"
         self._set_text_var(
@@ -567,11 +626,48 @@ class MicropriceGui:
                     "last_state_var",
                 )
 
+        self._update_strategy_labels(strategy_snapshot)
         status_label = str(data.get("estimator", self.estimator_var.get().strip()))
         self.status_var.set(
             f"Streaming {self.coin_var.get().strip().upper()} via {self.subscription_var.get().strip()} ({status_label})"
         )
         self._refresh_plot()
+
+    def _update_strategy_state(self, midprice: float, adjustment: float) -> StrategySnapshot | None:
+        if self.strategy_engine is None:
+            return None
+        return self.strategy_engine.update(
+            midprice=midprice,
+            adjustment=adjustment,
+            enabled=bool(self.run_strategy_var.get()),
+        )
+
+    def _update_strategy_labels(self, snapshot: StrategySnapshot | None) -> None:
+        if self.strategy_engine is None:
+            self.strategy_status_var.set("Strategy: local strategy module not found")
+            self.strategy_position_var.set("Position: -")
+            self.strategy_pnl_var.set("PnL: -")
+            self.strategy_trade_count_var.set("Closed Trades: -")
+            return
+        if snapshot is None:
+            if self.run_strategy_var.get():
+                self.strategy_status_var.set("Strategy: armed")
+            else:
+                self.strategy_status_var.set("Strategy: disabled")
+            self.strategy_position_var.set("Position: Flat")
+            self.strategy_pnl_var.set("PnL: realized=0.000000 | total=0.000000")
+            self.strategy_trade_count_var.set("Closed Trades: 0")
+            return
+
+        position_name = "Long" if snapshot.position > 0 else "Short" if snapshot.position < 0 else "Flat"
+        self.strategy_status_var.set(f"Strategy: {snapshot.last_action}")
+        self.strategy_position_var.set(
+            f"Position: {position_name} | hold_left={snapshot.events_remaining} | entry={_fmt_float(snapshot.entry_price)}"
+        )
+        self.strategy_pnl_var.set(
+            f"PnL: realized={snapshot.realized_pnl:.6f} | unrealized={snapshot.unrealized_pnl:.6f} | total={snapshot.total_pnl:.6f}"
+        )
+        self.strategy_trade_count_var.set(f"Closed Trades: {snapshot.trades_closed}")
 
     def _poll_queue(self) -> None:
         try:
