@@ -1,0 +1,109 @@
+{
+  "model_kind": "multilevel",
+  "tick_size": 1.0,
+  "calibration_horizon": 1,
+  "levels": 1,
+  "decay_lambda": 0.0,
+  "dt": 1,
+  "intercept": -0.003410561496017233,
+  "slope": 1.2002812409316799,
+  "train_mse": 22.921121106033247,
+  "train_correlation": 0.2906795084959254,
+  "validation_mse": 8.036195431322993,
+  "validation_correlation": 0.37020513141750544,
+  "calibration_units": "ticks",
+  "fit_intercept": true,
+  "alpha_horizon": 1,
+  "train_mse_ticks": 22.921121106033247,
+  "train_mae_ticks": 1.7153809036125263,
+  "train_rmse_ticks": 4.787600767193652,
+  "train_pearson": 0.2906795084959254,
+  "train_spearman": 0.5722377834278176,
+  "train_directional_accuracy": 0.904677000074488,
+  "validation_mse_ticks": 8.036195431322993,
+  "validation_mae_ticks": 1.0193442114457525,
+  "validation_rmse_ticks": 2.83481841240722,
+  "validation_pearson": 0.37020513141750544,
+  "validation_spearman": 0.5481180860823434,
+  "validation_directional_accuracy": 0.9410893584842247,
+  "validation_deciles": [
+    {
+      "bucket": 1,
+      "mean_future_return": -2.378001520559228,
+      "count": 94702
+    },
+    {
+      "bucket": 2,
+      "mean_future_return": -0.819141297346385,
+      "count": 94701
+    },
+    {
+      "bucket": 3,
+      "mean_future_return": -0.32016557375318105,
+      "count": 94701
+    },
+    {
+      "bucket": 4,
+      "mean_future_return": -0.1475327610056916,
+      "count": 94701
+    },
+    {
+      "bucket": 5,
+      "mean_future_return": -0.041931975375128036,
+      "count": 94701
+    },
+    {
+      "bucket": 6,
+      "mean_future_return": 0.039175932672305465,
+      "count": 94701
+    },
+    {
+      "bucket": 7,
+      "mean_future_return": 0.13994572390999038,
+      "count": 94701
+    },
+    {
+      "bucket": 8,
+      "mean_future_return": 0.3583277895692759,
+      "count": 94701
+    },
+    {
+      "bucket": 9,
+      "mean_future_return": 0.8741935143240304,
+      "count": 94701
+    },
+    {
+      "bucket": 10,
+      "mean_future_return": 2.290152267111571,
+      "count": 94702
+    }
+  ],
+  "validation_threshold_metrics": [
+    {
+      "percentile": 80.0,
+      "threshold": 0.5841987648640411,
+      "coverage": 0.2000006335716971,
+      "row_count": 189403,
+      "hit_rate": 0.9816470365640225,
+      "mean_future_return_ticks": 2.2550936363204386
+    },
+    {
+      "percentile": 90.0,
+      "threshold": 0.5874846751468811,
+      "coverage": 0.10000084476226279,
+      "row_count": 94702,
+      "hit_rate": 0.9778733689162554,
+      "mean_future_return_ticks": 2.960428502037972
+    },
+    {
+      "percentile": 95.0,
+      "threshold": 0.5875953476128826,
+      "coverage": 0.05000042238113139,
+      "row_count": 47351,
+      "hit_rate": 0.9704177839287259,
+      "mean_future_return_ticks": 3.973400772950941
+    }
+  ],
+  "top_bottom_decile_spread_ticks": 4.668153787670799,
+  "decile_monotonicity_score": 1.0
+}
