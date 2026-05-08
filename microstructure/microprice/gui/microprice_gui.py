@@ -5,11 +5,11 @@ from pathlib import Path
 import queue
 import sys
 import threading
-from typing import Any
+from typing import Any, TypeAlias
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -18,7 +18,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import ScalarFormatter
 
-from microprice.L1microprice import (
+from microstructure.microprice.L1microprice import (
     ESTIMATOR_CHOICES,
     GUI_POLL_MS,
     HYPERLIQUID_MAINNET_WS_URL,
@@ -26,19 +26,18 @@ from microprice.L1microprice import (
     load_streaming_model,
     stream_hyperliquid_microprice,
 )
-from microprice.calibration import FittedMicropriceModel
-from microprice.multilevel_calibration import FittedMultilevelMicropriceModel
+from microstructure.microprice.calibration import FittedMicropriceModel
+from microstructure.microprice.multilevel_calibration import FittedMultilevelMicropriceModel
 
 try:
     from local_strategies.adjustment_threshold_strategy import AdjustmentThresholdStrategy, StrategySnapshot
 except ImportError:
     AdjustmentThresholdStrategy = None
-    StrategySnapshot = Any
+    StrategySnapshot: TypeAlias = Any
 
 StreamingModel = FittedMicropriceModel | FittedMultilevelMicropriceModel
 
 DEFAULT_PRIMARY_MODEL = ROOT / "models" / "btc_l1_model_20260122_20260221.json"
-
 
 def _fmt_float(value: float | None, digits: int = 6) -> str:
     if value is None:
@@ -249,7 +248,6 @@ class MicropriceGui:
         self.strategy_axis.set_xlabel("Observation")
         self.strategy_axis.set_ylabel("PnL")
         self.strategy_axis.grid(True, alpha=0.25)
-
         (self.mid_line,) = self.axis.plot([], [], color="#1f77b4", label="Mid", linewidth=1.8)
         (self.primary_micro_line,) = self.axis.plot([], [], color="#d62728", label="Microprice", linewidth=1.9)
         (self.primary_adjustment_line,) = self.adjustment_axis.plot(

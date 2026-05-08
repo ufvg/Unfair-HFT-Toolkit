@@ -8,6 +8,12 @@ from typing import Any, Callable
 
 import numpy as np
 
+from microstructure.obi import (
+    imbalance_bucket,
+    imbalance_bucket_numba,
+    l1_order_book_imbalance_numba,
+    order_book_imbalance,
+)
 from .calibration import FittedMicropriceModel, load_model
 from .multilevel_calibration import FittedMultilevelMicropriceModel, load_multilevel_model
 
@@ -33,8 +39,7 @@ def _compute_live_values_python(
     imbalance_edges: np.ndarray,
     adjustment_vector: np.ndarray,
 ) -> tuple[float, float, int | None, int | None, int | None]:
-    total = bid_size + ask_size
-    imbalance = 0.5 if total <= 0.0 else bid_size / total
+    imbalance = order_book_imbalance(bid_size, ask_size)
     spread = ask - bid
     if spread <= 0.0 or tick_size <= 0.0:
         return imbalance, 0.0, None, None, None
@@ -42,11 +47,12 @@ def _compute_live_values_python(
     if spread_ticks < 1:
         return imbalance, 0.0, None, None, None
     spread_ticks = min(max(spread_ticks, 1), n_spread)
-    clipped = min(max(imbalance, 0.0), 1.0)
-    imbalance_bucket = int(np.searchsorted(imbalance_edges[1:-1], clipped, side="right"))
-    imbalance_bucket = min(max(imbalance_bucket, 0), n_imb - 1)
+    imbalance_bucket_index = min(
+        imbalance_bucket(imbalance, imbalance_edges, lower_bound=0.0, upper_bound=1.0),
+        n_imb - 1,
+    )
     spread_bucket = spread_ticks - 1
-    state_index = spread_bucket * n_imb + imbalance_bucket
+    state_index = spread_bucket * n_imb + imbalance_bucket_index
     return imbalance, float(adjustment_vector[state_index]), spread_ticks, spread_bucket, state_index
 
 
@@ -77,8 +83,11 @@ if njit is not None:
         imbalance_edges: np.ndarray,
         adjustment_vector: np.ndarray,
     ) -> tuple[float, float, int, int, int]:
-        total = bid_size + ask_size
-        imbalance = 0.5 if total <= 0.0 else bid_size / total
+        imbalance = (
+            l1_order_book_imbalance_numba(bid_size, ask_size)
+            if l1_order_book_imbalance_numba is not None
+            else 0.5
+        )
         spread = ask - bid
         if spread <= 0.0 or tick_size <= 0.0:
             return imbalance, 0.0, -1, -1, -1
@@ -87,16 +96,14 @@ if njit is not None:
             return imbalance, 0.0, -1, -1, -1
         if spread_ticks > n_spread:
             spread_ticks = n_spread
-        clipped = imbalance
-        if clipped < 0.0:
-            clipped = 0.0
-        elif clipped > 1.0:
-            clipped = 1.0
-        imbalance_bucket = _searchsorted_right(imbalance_edges[1:-1], clipped)
-        if imbalance_bucket < 0:
-            imbalance_bucket = 0
-        elif imbalance_bucket >= n_imb:
-            imbalance_bucket = n_imb - 1
+        if imbalance_bucket_numba is not None:
+            imbalance_bucket = imbalance_bucket_numba(imbalance, imbalance_edges, 0.0, 1.0)
+        else:
+            imbalance_bucket = _searchsorted_right(imbalance_edges[1:-1], imbalance)
+            if imbalance_bucket < 0:
+                imbalance_bucket = 0
+            elif imbalance_bucket >= n_imb:
+                imbalance_bucket = n_imb - 1
         spread_bucket = spread_ticks - 1
         state_index = spread_bucket * n_imb + imbalance_bucket
         return imbalance, adjustment_vector[state_index], spread_ticks, spread_bucket, state_index
@@ -344,7 +351,7 @@ def _build_multilevel_payload(
     bid_size = float(bid_sizes[0])
     ask_size = float(ask_sizes[0])
     midprice = 0.5 * (bid + ask)
-    imbalance = 0.5 if bid_size + ask_size <= 0.0 else bid_size / (bid_size + ask_size)
+    imbalance = order_book_imbalance(bid_size, ask_size)
     adjustment = model.adjustment_from_book(
         bid_prices=bid_prices,
         bid_sizes=bid_sizes,
@@ -548,14 +555,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 
 def launch_gui() -> None:
-    from microprice.gui.microprice_gui import launch_gui as gui_launch
+    from microstructure.microprice.gui.microprice_gui import launch_gui as gui_launch
 
     gui_launch()
 
 
 def __getattr__(name: str) -> Any:
     if name == "MicropriceGui":
-        from microprice.gui.microprice_gui import MicropriceGui
+        from microstructure.microprice.gui.microprice_gui import MicropriceGui
 
         return MicropriceGui
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
