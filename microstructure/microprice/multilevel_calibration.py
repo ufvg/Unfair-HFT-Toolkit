@@ -9,6 +9,13 @@ from typing import Any, Literal, Sequence
 import numpy as np
 import pandas as pd
 
+from microstructure.obi import (
+    bucketize_imbalance,
+    cumulative_signed_order_book_imbalance,
+    quantile_bucket_edges,
+    signed_order_book_imbalance,
+    signed_order_book_imbalance_array,
+)
 from .calibration import (
     L1Microprice,
     L2_TENSOR_WIDTH,
@@ -521,9 +528,9 @@ def _state_conditioning_series(
     ).astype(np.int64)
     bid_sizes = feature_frame.loc[:, _size_columns("bid", levels)].to_numpy(dtype=np.float64, copy=False)
     ask_sizes = feature_frame.loc[:, _size_columns("ask", levels)].to_numpy(dtype=np.float64, copy=False)
-    depth_imbalance = _safe_ratio(
-        np.sum(bid_sizes, axis=1) - np.sum(ask_sizes, axis=1),
-        np.sum(bid_sizes, axis=1) + np.sum(ask_sizes, axis=1),
+    depth_imbalance = signed_order_book_imbalance_array(
+        np.sum(bid_sizes, axis=1),
+        np.sum(ask_sizes, axis=1),
     )
     return spread_ticks, depth_imbalance
 
@@ -531,13 +538,7 @@ def _state_conditioning_series(
 def _imbalance_bucket_edges(values: np.ndarray, n_imb: int) -> np.ndarray:
     if n_imb <= 0:
         raise ValueError("n_imb must be positive.")
-    clipped = np.clip(np.asarray(values, dtype=np.float64), -1.0, 1.0)
-    quantiles = np.linspace(0.0, 1.0, n_imb + 1, dtype=np.float64)
-    edges = np.quantile(clipped, quantiles)
-    edges = np.asarray(edges, dtype=np.float64)
-    edges[0] = -np.inf
-    edges[-1] = np.inf
-    return edges
+    return quantile_bucket_edges(values, bucket_count=n_imb, lower_bound=-1.0, upper_bound=1.0)
 
 
 def _state_index_arrays(
@@ -551,12 +552,12 @@ def _state_index_arrays(
     if imbalance_edges.ndim != 1 or imbalance_edges.size < 2:
         raise ValueError("imbalance_edges must be one-dimensional with at least two entries.")
     spread_bucket = np.clip(np.asarray(spread_ticks, dtype=np.int64), 1, n_spread) - 1
-    imbalance_bucket = np.searchsorted(
-        imbalance_edges[1:-1],
-        np.clip(np.asarray(depth_imbalance, dtype=np.float64), -1.0, 1.0),
-        side="right",
+    imbalance_bucket = bucketize_imbalance(
+        depth_imbalance,
+        imbalance_edges,
+        lower_bound=-1.0,
+        upper_bound=1.0,
     )
-    imbalance_bucket = np.clip(imbalance_bucket, 0, imbalance_edges.size - 2)
     state_index = spread_bucket * (imbalance_edges.size - 1) + imbalance_bucket
     return spread_bucket, imbalance_bucket, state_index.astype(np.int64, copy=False)
 
@@ -682,13 +683,10 @@ def prepare_multilevel_snapshot_feature_frame(
     ask_sizes = feature_frame.loc[:, _size_columns("ask", levels)].to_numpy(dtype=np.float64, copy=False)
 
     spread_ticks = (ask_prices[:, 0] - bid_prices[:, 0]) / resolved_tick_size
-    level_imbalance = _safe_ratio(bid_sizes - ask_sizes, bid_sizes + ask_sizes)
+    level_imbalance = signed_order_book_imbalance_array(bid_sizes, ask_sizes)
     cumulative_bid_sizes = np.cumsum(bid_sizes, axis=1)
     cumulative_ask_sizes = np.cumsum(ask_sizes, axis=1)
-    cumulative_imbalance = _safe_ratio(
-        cumulative_bid_sizes - cumulative_ask_sizes,
-        cumulative_bid_sizes + cumulative_ask_sizes,
-    )
+    cumulative_imbalance = cumulative_signed_order_book_imbalance(bid_sizes, ask_sizes)
     total_depth_imbalance = cumulative_imbalance[:, -1]
 
     feature_frame["spread_ticks"] = spread_ticks
@@ -1593,8 +1591,7 @@ class FittedStateConditionedMultilevelMicropriceModel:
         spread_ticks = int(np.rint((ask_prices[0] - bid_prices[0]) / self.tick_size))
         total_bid = float(np.sum(bid_sizes))
         total_ask = float(np.sum(ask_sizes))
-        denominator = total_bid + total_ask
-        depth_imbalance = 0.0 if denominator <= 0.0 else float((total_bid - total_ask) / denominator)
+        depth_imbalance = signed_order_book_imbalance(total_bid, total_ask)
         _, _, state_index = _state_index_arrays(
             np.asarray([spread_ticks], dtype=np.int64),
             np.asarray([depth_imbalance], dtype=np.float64),

@@ -14,6 +14,7 @@ import lz4.frame
 import numpy as np
 import pandas as pd
 
+from microstructure.obi import bucketize_imbalance, imbalance_bucket, order_book_imbalance, order_book_imbalance_array
 from .validation import _validate_finite as _validate_finite_scalar
 from .validation import _validate_nonnegative as _validate_nonnegative_scalar
 
@@ -187,10 +188,7 @@ class FittedMicropriceModel:
     def _imbalance(self, bid_size: float, ask_size: float) -> float:
         bid_qty = _validate_nonnegative_scalar(bid_size, "bid_size")
         ask_qty = _validate_nonnegative_scalar(ask_size, "ask_size")
-        total = bid_qty + ask_qty
-        if total <= 0:
-            return 0.5
-        return bid_qty / total
+        return order_book_imbalance(bid_qty, ask_qty)
 
     def _spread_ticks(self, bid: float, ask: float) -> int | None:
         bid_price = _validate_finite_scalar(bid, "bid")
@@ -204,9 +202,7 @@ class FittedMicropriceModel:
         return min(max(ticks, 1), self.n_spread)
 
     def _imbalance_bucket(self, imbalance: float) -> int:
-        clipped = min(max(float(imbalance), 0.0), 1.0)
-        bucket = int(np.searchsorted(self.imbalance_edges[1:-1], clipped, side="right"))
-        return min(max(bucket, 0), self.n_imb - 1)
+        return imbalance_bucket(imbalance, self.imbalance_edges, lower_bound=0.0, upper_bound=1.0)
 
     def state_from_l1(
         self,
@@ -941,7 +937,7 @@ def prepare_alpha_evaluation_frame(
     frame = _normalize_input(df).sort_values("time", kind="mergesort").reset_index(drop=True)
     frame["mid"] = (frame["bid"] + frame["ask"]) / 2.0
     total_size = frame["bs"] + frame["as"]
-    frame["imbalance"] = np.where(total_size > 0.0, frame["bs"] / total_size, 0.5)
+    frame["imbalance"] = order_book_imbalance_array(frame["bs"], frame["as"])
     frame["weighted_mid"] = np.where(
         total_size > 0.0,
         (frame["ask"] * frame["bs"] + frame["bid"] * frame["as"]) / total_size,
@@ -973,9 +969,12 @@ def _model_adjustment_series(
     if not bool(valid.any()):
         return adjustment
 
-    imbalance = np.clip(frame["imbalance"].to_numpy(dtype=float), 0.0, 1.0)
-    imbalance_bucket = np.searchsorted(model.imbalance_edges[1:-1], imbalance, side="right")
-    imbalance_bucket = np.clip(imbalance_bucket, 0, model.n_imb - 1)
+    imbalance_bucket = bucketize_imbalance(
+        frame["imbalance"].to_numpy(dtype=float),
+        model.imbalance_edges,
+        lower_bound=0.0,
+        upper_bound=1.0,
+    )
     spread_ticks = spread_ticks_raw[valid].astype(int)
     valid_indices = np.flatnonzero(valid.to_numpy(dtype=bool))
     state_indices = (spread_ticks - 1) * model.n_imb + imbalance_bucket[valid_indices]
