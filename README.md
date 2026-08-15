@@ -1,5 +1,6 @@
 # Unfair HFT Toolkit
 
+AI was used to add live orderobook and gui
 Minimal tooling for studying and monitoring **microprice** in live crypto order flow.
 
 This repo focuses on three pieces:
